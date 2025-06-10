@@ -1,0 +1,7 @@
+import numpy as up
+import torch
+from torch.utils import data
+from d2l import torch as d2l
+true_w = torcch.tensor([1, 2, 3])
+true_b = 2
+features, labels = d2l.synthetic_data(ture_w, ture_b, 3000)
