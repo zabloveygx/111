@@ -1,0 +1,120 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ImprovedTensorGenerator(nn.Module):
+    def __init__(self, latent_dim=100, output_shape=(3, 64, 64), hidden_dims=[256, 512, 1024], 
+                 use_bn=True, activation='leaky_relu', output_activation='tanh'):
+        """
+        优化的张量生成器模型
+        
+        参数:
+            latent_dim (int): 潜在空间维度
+            output_shape (tuple): 输出张量形状
+            hidden_dims (list): 隐藏层维度列表
+            use_bn (bool): 是否使用批量归一化
+            activation (str): 隐藏层激活函数 ('leaky_relu', 'relu', 'elu', 'selu')
+            output_activation (str): 输出层激活函数 ('tanh', 'sigmoid', 'linear')
+        """
+        super(ImprovedTensorGenerator, self).__init__()
+        self.output_shape = output_shape
+        self.output_size = torch.Size(output_shape).numel()
+        self.latent_dim = latent_dim
+        
+        # 创建网络层
+        layers = []
+        prev_dim = latent_dim
+        
+        # 添加隐藏层
+        for dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, dim))
+            
+            # 添加激活函数
+            if activation == 'leaky_relu':
+                layers.append(nn.LeakyReLU(0.2, inplace=True))
+            elif activation == 'relu':
+                layers.append(nn.ReLU(inplace=True))
+            elif activation == 'elu':
+                layers.append(nn.ELU(inplace=True))
+            elif activation == 'selu':
+                layers.append(nn.SELU(inplace=True))
+            
+            # 添加批量归一化
+            if use_bn:
+                layers.append(nn.BatchNorm1d(dim))
+            
+            prev_dim = dim
+        
+        # 添加输出层
+        layers.append(nn.Linear(prev_dim, self.output_size))
+        
+        # 添加输出激活函数
+        if output_activation == 'tanh':
+            layers.append(nn.Tanh())
+        elif output_activation == 'sigmoid':
+            layers.append(nn.Sigmoid())
+        elif output_activation == 'linear':
+            pass  # 无激活函数
+        
+        self.model = nn.Sequential(*layers)
+        
+        # 初始化权重
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """自定义权重初始化"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, z):
+        """前向传播"""
+        output = self.model(z)
+        return output.view(-1, *self.output_shape)
+    
+    def generate(self, num_samples=1, device='cpu'):
+        """生成样本的便捷方法"""
+        z = torch.randn(num_samples, self.latent_dim, device=device)
+        with torch.no_grad():
+            return self.forward(z)
+
+# 使用示例
+if __name__ == "__main__":
+    # 设置参数
+    latent_dim = 128
+    batch_size = 8
+    output_shape = (3, 64, 64)  # 生成3通道的64x64图像
+    
+    # 初始化模型 - 使用自定义配置
+    generator = ImprovedTensorGenerator(
+        latent_dim=latent_dim,
+        output_shape=output_shape,
+        hidden_dims=[256, 512, 1024, 2048],  # 更深的网络
+        use_bn=True,
+        activation='leaky_relu',
+        output_activation='tanh'
+    )
+    
+    # 打印模型结构
+    print("Generator Architecture:")
+    print(generator)
+    
+    # 使用便捷方法生成数据
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    generator.to(device)
+    
+    # 生成样本
+    generated_data = generator.generate(num_samples=batch_size, device=device)
+    
+    print("\nGenerated tensor shape:", generated_data.shape)
+    print("Tensor stats - Min: {:.4f}, Max: {:.4f}, Mean: {:.4f}, Std: {:.4f}".format(
+        generated_data.min().item(), 
+        generated_data.max().item(),
+        generated_data.mean().item(),
+        generated_data.std().item()
+    ))
