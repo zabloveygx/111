@@ -1,0 +1,36 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, ReduceLROnPlateau
+from timm import create_model  # 强烈推荐使用 timm 库获取预训练模型和最新优化
+import torch.nn.utils.prune as prune
+import torch.quantization
+
+# 检查设备
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# 示例数据加载 (使用 CIFAR-10, 实际替换为你的数据集)
+transform_train = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    # 添加高级数据增强 (可选)
+    # transforms.RandAugment(),  # 需要 torchvision >= 0.11
+    # transforms.TrivialAugmentWide(),
+])
+
+transform_test = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+])
+
+train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+test_dataset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
+
+train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=4, pin_memory=True)
+test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
