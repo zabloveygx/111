@@ -1,0 +1,98 @@
+#量化
+# 方案1: 动态量化 (简单快速，精度损失可能稍大)
+model_quant_dynamic = torch.quantization.quantize_dynamic(
+    model,  # 原始模型 (最好是加载了训练好权重的 model.to('cpu'))
+    {torch.nn.Linear, torch.nn.Conv2d},  # 要量化的模块类型
+    dtype=torch.qint8  # 量化数据类型
+)
+# 保存量化模型
+torch.save(model_quant_dynamic.state_dict(), 'resnet50d_dynamic_quant.pth')
+
+# 方案2: 量化感知训练 QAT (精度损失最小，推荐！)
+# 注意: 需要在训练循环中加入量化模拟步骤
+model_qat = create_model(model_name, pretrained=False, num_classes=10)  # 从无预训练开始或加载你的精调模型
+model_qat.train()
+model_qat.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')  # x86 用 'fbgemm', ARM 用 'qnnpack'
+# 准备模型 (插入观察点和伪量化节点)
+model_qat_prepared = torch.quantization.prepare_qat(model_qat.to('cpu').train())
+# ... 然后使用类似上面的训练循环，在训练时用 model_qat_prepared 代替 model ...
+# 训练完成后转换为真正的量化模型
+model_qat_int8 = torch.quantization.convert(model_qat_prepared.eval().to('cpu'))
+# 保存量化模型
+torch.save(model_qat_int8.state_dict(), 'resnet50d_qat_int8.pth')
+
+
+#剪技
+# 结构化剪枝示例 (按通道/滤波器剪枝 - 更实用)
+def prune_model_l1_unstructured(model, amount=0.2):
+    """
+    L1 范数结构化剪枝 (示例: 剪 Conv2d 的权重)
+    """
+    parameters_to_prune = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            parameters_to_prune.append((module, 'weight'))
+    prune.global_unstructured(
+        parameters_to_prune,
+        pruning_method=prune.L1Unstructured,
+        amount=amount,  # 剪枝比例
+    )
+    # 永久移除剪枝掩码 (让剪枝生效)
+    for module, _ in parameters_to_prune:
+        prune.remove(module, 'weight')
+    return model
+
+# 加载训练好的模型
+model_pruned = create_model(model_name, pretrained=False, num_classes=10)
+model_pruned.load_state_dict(torch.load('best_resnet_model.pth'))
+model_pruned.to(device)
+
+# 执行剪枝 (剪掉 20% 的卷积滤波器)
+model_pruned = prune_model_l1_unstructured(model_pruned, amount=0.2)
+
+# 重要: 剪枝后需要微调以恢复精度！
+# 使用较小的学习率 (如初始 LR 的 1/10) 和较少的 epoch 对剪枝后的模型进行微调训练
+optimizer_prune = optim.SGD(model_pruned.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)  # 更小的 LR
+# ... 运行类似上面的训练循环几个 epoch (e.g., 10-20 epochs) ...
+torch.save(model_pruned.state_dict(), 'resnet50d_pruned_finetuned.pth')
+
+
+
+#知识蒸馏
+# 假设我们有一个大的教师模型 (teacher_model) 和一个小学生模型 (student_model)
+teacher_model = create_model('resnet101d', pretrained=True, num_classes=10).to(device).eval()
+student_model = create_model('resnet18', pretrained=True, num_classes=10).to(device)
+
+# 蒸馏损失 (KL 散度 + 原始交叉熵)
+def distillation_loss(student_logits, teacher_logits, labels, alpha=0.5, temperature=4.0):
+    """
+    student_logits: 学生模型输出 logits
+    teacher_logits: 教师模型输出 logits
+    labels: 真实标签
+    alpha: 原始 CE 损失的权重 (1-alpha 是蒸馏损失的权重)
+    temperature: 软化 logits 的温度
+    """
+    # 计算原始分类损失
+    ce_loss = nn.CrossEntropyLoss()(student_logits, labels)
+    # 计算蒸馏损失 (KL 散度)
+    soft_teacher = nn.functional.softmax(teacher_logits / temperature, dim=1)
+    soft_student = nn.functional.log_softmax(student_logits / temperature, dim=1)
+    kld_loss = nn.KLDivLoss(reduction='batchmean')(soft_student, soft_teacher.detach()) * (temperature ** 2)
+    # 组合损失
+    return alpha * ce_loss + (1 - alpha) * kld_loss
+
+# 训练学生模型
+optimizer_distill = optim.AdamW(student_model.parameters(), lr=1e-3)
+for epoch in range(num_distill_epochs):  # 通常蒸馏需要的 epoch 比从头训练少
+    student_model.train()
+    for inputs, labels in train_loader:
+        inputs, labels = inputs.to(device), labels.to(device)
+        with torch.no_grad():
+            teacher_logits = teacher_model(inputs)  # 教师模型不更新梯度
+        student_logits = student_model(inputs)
+        loss = distillation_loss(student_logits, teacher_logits, labels, alpha=0.3, temperature=4.0)
+        optimizer_distill.zero_grad()
+        loss.backward()
+        optimizer_distill.step()
+    # ... 验证学生模型 ...
+torch.save(student_model.state_dict(), 'distilled_resnet18.pth')
