@@ -1,0 +1,14 @@
+#使用 `timm`
+# 安装 timm: pip install timm
+
+import timm
+
+# 选择模型 (比原生 torchvision 的 ResNet 更好，包含 ResNet-D, ResNeXt, RegNet 等变种)
+model_name = 'resnet50d'  # 试试: 'resnext50_32x4d', 'regnety_040', 'efficientnet_b0', 'mobilenetv3_large_100'
+model = create_model(model_name, pretrained=True, num_classes=10)  # 使用 ImageNet 预训练权重
+model = model.to(device)
+
+# 或者使用原生 torchvision ResNet (通常不如 timm 的优化版本)
+# model = torchvision.models.resnet50(pretrained=True)
+# model.fc = nn.Linear(model.fc.in_features, 10)  # 修改全连接层以适应 CIFAR-10
+# model = model.to(device)
