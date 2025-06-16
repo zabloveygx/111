@@ -1,0 +1,71 @@
+# 1. 损失函数 (带 Label Smoothing)
+criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # Label Smoothing 提高泛化
+
+# 2. 优化器选择
+optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)  # SGD 常用
+# optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.05)  # AdamW 也很流行
+
+# 3. 学习率调度器 (选择一种)
+# 3.1 Cosine Annealing (常用且稳定)
+scheduler = CosineAnnealingLR(optimizer, T_max=200)  # T_max 通常设为总 epoch 数
+
+# 3.2 One Cycle Policy (可能更快收敛，需要调参)
+# scheduler = OneCycleLR(optimizer, max_lr=0.1, total_steps=200 * len(train_loader), epochs=200, steps_per_epoch=len(train_loader))
+
+# 3.3 ReduceLROnPlateau (验证集不提升时降低 LR)
+# scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=5, verbose=True)  # mode='max' 用于监控精度
+
+# 4. 混合精度训练 (大幅加速训练，减少显存 - 需要 GPU 支持)
+scaler = torch.cuda.amp.GradScaler()  # 初始化 GradScaler
+
+# 5. 训练循环 (包含混合精度)
+num_epochs = 200
+best_acc = 0.0
+
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    for inputs, labels in train_loader:
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+
+        # 混合精度训练上下文
+        with torch.cuda.amp.autocast():
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+
+        # 使用 scaler 进行反向传播和优化器更新
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        running_loss += loss.item() * inputs.size(0)
+
+    # 更新学习率 (根据选择的调度器)
+    if isinstance(scheduler, CosineAnnealingLR) or isinstance(scheduler, OneCycleLR):
+        scheduler.step()
+    # 对于 ReduceLROnPlateau，需要在验证后调用 scheduler.step(val_acc)
+
+    # 验证阶段
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    val_acc = 100 * correct / total
+    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss / len(train_dataset):.4f}, Val Acc: {val_acc:.2f}%')
+
+    # 保存最佳模型
+    if val_acc > best_acc:
+        best_acc = val_acc
+        torch.save(model.state_dict(), 'best_resnet_model.pth')
+        print(f'Saved new best model with acc: {val_acc:.2f}%')
+
+print(f'Finished Training. Best Validation Accuracy: {best_acc:.2f}%')
